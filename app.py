@@ -1,24 +1,23 @@
-# Importing Libraries
+# Import required modules
 import streamlit as st
-import base64
-from bs4 import BeautifulSoup
-import requests
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 from urllib.parse import urlparse, parse_qs
+import requests
+from bs4 import BeautifulSoup
+import base64
 from textwrap import dedent
+
+# Importing Libraries for Summarization
 from transformers import BartForConditionalGeneration, BartTokenizer
 import spacy
 from spacy.lang.en.stop_words import STOP_WORDS
 from string import punctuation
 from heapq import nlargest
 
-# Streamlit Configuration
-st.set_page_config(
-    page_title="Youtube Summariser",
-    page_icon='favicon.ico',
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+# Import gTTS for text-to-speech
+from gtts import gTTS
+import io
+import time  # For measuring time taken for audio generation
 
 # Function to Summarize using Spacy
 def spacy_summarize(text_content, percent):
@@ -66,6 +65,74 @@ def bart_summarize(text_content, max_length=150):
 
     summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
     return summary
+
+# Function to fetch audio URL
+def fetch_audio_url(video_id):
+    try:
+        # Example logic to fetch audio URL from an external source
+        # Replace with your actual logic to fetch audio URL based on video_id
+        audio_url = f'https://www.example.com/audio/{video_id}.mp3'
+        return audio_url
+    except Exception as e:
+        st.error(f"Error fetching audio: {str(e)}")
+        return None
+
+# Function to extract video ID from URL
+def extract_video_id(url):
+    parsed_url = urlparse(url)
+    if parsed_url.hostname in ['www.youtube.com', 'youtube.com']:
+        if parsed_url.path == '/watch':
+            query_params = parse_qs(parsed_url.query)
+            return query_params.get('v', [None])[0]
+        if parsed_url.path.startswith('/embed/'):
+            return parsed_url.path.split('/')[2]
+        if parsed_url.path.startswith('/v/'):
+            return parsed_url.path.split('/')[2]
+    elif parsed_url.hostname in ['youtu.be']:
+        return parsed_url.path[1:]
+    return None
+
+# Function to generate transcript
+def generate_transcript(video_id):
+    try:
+        transcript = YouTubeTranscriptApi.get_transcript(video_id)
+        script = ""
+        for text in transcript:
+            t = text["text"]
+            if t != '[Music]':
+                script += t + " "
+        return script, len(script.split())
+    except TranscriptsDisabled:
+        st.error("Transcripts are disabled for this video.")
+        return None, 0
+    except NoTranscriptFound:
+        st.error("No transcript found for this video.")
+        return None, 0
+    except Exception as e:
+        st.error(f"An error occurred: {str(e)}")
+        return None, 0
+
+# Function to convert text to speech using gTTS
+def text_to_speech(text_content):
+    try:
+        start_time = time.time()  # Measure start time
+        tts = gTTS(text=text_content, lang='en', slow=False)  # Set slow to False for faster speech
+        fp = io.BytesIO()
+        tts.write_to_fp(fp)
+        end_time = time.time()  # Measure end time
+        # st.write(f"Time taken for audio generation: {end_time - start_time:.2f} seconds")
+        return fp
+    except Exception as e:
+        st.error(f"Error generating speech: {str(e)}")
+        return None
+
+# Set Streamlit Page Configuration
+st.set_page_config(
+    page_title="Youtube Summariser",
+    page_icon='favicon.ico',
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 # Hide Streamlit Footer and buttons
 hide_streamlit_style = """
@@ -116,105 +183,81 @@ st.markdown(
 # Input Video Link
 url = st.sidebar.text_input('Video URL', 'https://www.youtube.com/watch?v=T-JVpKku5SI')
 
-# Display Video and Title
-r = requests.get(url)
-soup = BeautifulSoup(r.text, features="html.parser")
-link = soup.find_all(name="title")[0]
-title = str(link).replace("<title>","").replace("</title>","").replace("&amp;","&")
-st.info("### " + title)
-st.video(url)
+# Extract video ID from URL
+video_id = extract_video_id(url)
 
-# Specify Summarization type
-sumtype = st.sidebar.selectbox(
-    'Specify Summarization Type',
-    options=['Extractive', 'Abstractive (Subtitles)'],
-    index=0,
-    disabled=False
-)
-
-def extract_video_id(url):
-    parsed_url = urlparse(url)
-    if parsed_url.hostname in ['www.youtube.com', 'youtube.com']:
-        if parsed_url.path == '/watch':
-            query_params = parse_qs(parsed_url.query)
-            return query_params.get('v', [None])[0]
-        if parsed_url.path.startswith('/embed/'):
-            return parsed_url.path.split('/')[2]
-        if parsed_url.path.startswith('/v/'):
-            return parsed_url.path.split('/')[2]
-    elif parsed_url.hostname in ['youtu.be']:
-        return parsed_url.path[1:]
-    return None
-
-def generate_transcript(video_id):
+if video_id:
     try:
-        transcript = YouTubeTranscriptApi.get_transcript(video_id)
-        script = ""
-        for text in transcript:
-            t = text["text"]
-            if t != '[Music]':
-                script += t + " "
-        return script, len(script.split())
-    except TranscriptsDisabled:
-        st.error("Transcripts are disabled for this video.")
-        return None, 0
-    except NoTranscriptFound:
-        st.error("No transcript found for this video.")
-        return None, 0
+        # Display Video and Title
+        r = requests.get(url)
+        soup = BeautifulSoup(r.text, features="html.parser")
+        link = soup.find_all(name="title")[0]
+        title = str(link).replace("<title>","").replace("</title>","").replace("&amp;","&")
+        st.info("### " + title)
+
+        # Display Video
+        st.video(url)
+
+        # Specify Summarization type
+        sumtype = st.sidebar.selectbox(
+            'Specify Summarization Type',
+            options=['Extractive', 'Abstractive (Subtitles)'],
+            index=0,
+            format_func=lambda x: 'Select an option' if x == '' else x,
+            disabled=False
+        )
+
+        if sumtype == 'Extractive':
+            # Specify the summary length
+            length = st.sidebar.select_slider(
+                'Specify length of Summary',
+                options=['10%', '20%', '30%', '40%', '50%']
+            )
+
+            if st.sidebar.button('Summarize'):
+                st.success("### Success! Extractive summary generated.")
+
+                # Generate Transcript
+                transcript, no_of_words = generate_transcript(video_id)
+
+                if transcript:
+                    # Generate summary using Spacy
+                    summ = spacy_summarize(transcript, int(length[:2]))
+
+                    # Display Transcript
+                    st.markdown(dedent(f"""
+                    <div class="summary-container">
+                        <h3>\U0001F4D6 Summary</h3>
+                        <p>{summ}</p>
+                    </div>
+                    """), unsafe_allow_html=True)
+
+                    # Generate and display text-to-speech audio
+                    st.audio(text_to_speech(summ), format='audio/mp3', start_time=0)
+
+        elif sumtype == 'Abstractive (Subtitles)':
+            if st.sidebar.button('Summarize'):
+                st.success("### Success! Subtitles generated.")
+
+                # Generate Transcript
+                transcript, no_of_words = generate_transcript(video_id)
+
+                if transcript:
+                    # Display subtitles inside a bordered container
+                    st.markdown(dedent(f"""
+                    <div class="summary-container">
+                        <h3>\U0001F3A5 Subtitles</h3>
+                        <p>{transcript}</p>
+                    </div>
+                    """), unsafe_allow_html=True)
+
+                    # Generate and display text-to-speech audio
+                    st.audio(text_to_speech(transcript), format='audio/mp3', start_time=0)
+
     except Exception as e:
-        st.error(f"An error occurred: {str(e)}")
-        return None, 0
-
-if sumtype == 'Extractive':
-    # Specify the summary length
-    length = st.sidebar.select_slider(
-        'Specify length of Summary',
-        options=['10%', '20%', '30%', '40%', '50%']
-    )
-
-    if st.sidebar.button('Summarize'):
-        st.success("### Success! Extractive summary generated.")
-
-        # Extract video ID from URL
-        video_id = extract_video_id(url)
-        if video_id is None:
-            st.error("Invalid YouTube URL. Please provide a valid URL.")
-        else:
-            # Generate Transcript
-            transcript, no_of_words = generate_transcript(video_id)
-
-            if transcript:
-                # Generate summary using Spacy
-                summ = spacy_summarize(transcript, int(length[:2]))
-
-                # Translate and Print Summary
-                st.markdown(dedent(f"""
-                <div class="summary-container">
-                    <h3>\U0001F4D6 Summary</h3>
-                    <p>{summ}</p>
-                </div>
-                """), unsafe_allow_html=True)
-
-elif sumtype == 'Abstractive (Subtitles)':
-    if st.sidebar.button('Summarize'):
-        st.success("### Success! Subtitles generated.")
-
-        # Extract video ID from URL
-        video_id = extract_video_id(url)
-        if video_id is None:
-            st.error("Invalid YouTube URL. Please provide a valid URL.")
-        else:
-            # Generate Transcript
-            transcript, no_of_words = generate_transcript(video_id)
-
-            if transcript:
-                # Display subtitles inside a bordered container
-                st.markdown(dedent(f"""
-                <div class="summary-container">
-                    <h3>\U0001F3A5 Subtitles</h3>
-                    <p>{transcript}</p>
-                </div>
-                """), unsafe_allow_html=True)
+        st.error(f"Error: {str(e)}")
+else:
+    st.error("Invalid YouTube URL. Please provide a valid URL.")
 
 # Add Sidebar Info
 st.sidebar.info(
