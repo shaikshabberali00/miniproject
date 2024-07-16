@@ -1,4 +1,3 @@
-# Import required modules
 import streamlit as st
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 from urllib.parse import urlparse, parse_qs
@@ -6,20 +5,66 @@ import requests
 from bs4 import BeautifulSoup
 import base64
 from textwrap import dedent
-
-# Importing Libraries for Summarization
 from transformers import BartForConditionalGeneration, BartTokenizer
 import spacy
 from spacy.lang.en.stop_words import STOP_WORDS
 from string import punctuation
 from heapq import nlargest
+from googletrans import Translator
 
-# Import gTTS for text-to-speech
-from gtts import gTTS
-import io
-import time  # For measuring time taken for audio generation
+# Function to extract video ID from URL
+def extract_video_id(url):
+    parsed_url = urlparse(url)
+    if parsed_url.hostname in ['www.youtube.com', 'youtube.com']:
+        if parsed_url.path == '/watch':
+            query_params = parse_qs(parsed_url.query)
+            return query_params.get('v', [None])[0]
+        if parsed_url.path.startswith('/embed/'):
+            return parsed_url.path.split('/')[2]
+        if parsed_url.path.startswith('/v/'):
+            return parsed_url.path.split('/')[2]
+    elif parsed_url.hostname in ['youtu.be']:
+        return parsed_url.path[1:]
+    return None
 
-# Function to Summarize using Spacy
+# Function to generate transcript and optionally translate to English
+def generate_transcript(video_id):
+    try:
+        transcript = YouTubeTranscriptApi.get_transcript(video_id)
+
+        if not transcript:
+            st.error("No transcript found for this video.")
+            return None, 0
+
+        script = ""
+        for text in transcript:
+            t = text["text"]
+            if t != '[Music]':
+                script += t + " "
+
+        return script, len(script.split())
+
+    except TranscriptsDisabled:
+        st.error("Transcripts are disabled for this video.")
+        return None, 0
+    except NoTranscriptFound:
+        st.error("No transcript found for this video.")
+        return None, 0
+    except Exception as e:
+        st.error(f"An error occurred: {str(e)}")
+        return None, 0
+
+# Function to translate text to English
+def translate_to_english(text):
+    try:
+        translator = Translator()
+        translated_text = translator.translate(text, src='auto', dest='en').text
+        return translated_text
+    except Exception as e:
+        st.error(f"Error translating text: {str(e)}")
+        return None
+
+# Function to summarize text using Spacy
 def spacy_summarize(text_content, percent):
     stop_words = list(STOP_WORDS)
     punctuation_items = punctuation + '\n'
@@ -55,7 +100,7 @@ def spacy_summarize(text_content, percent):
     summary = ' '.join(final_summary)
     return summary
 
-# Function to Summarize using BART
+# Function to summarize text using BART model
 def bart_summarize(text_content, max_length=150):
     tokenizer = BartTokenizer.from_pretrained("facebook/bart-large-cnn")
     model = BartForConditionalGeneration.from_pretrained("facebook/bart-large-cnn")
@@ -66,69 +111,9 @@ def bart_summarize(text_content, max_length=150):
     summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
     return summary
 
-# Function to fetch audio URL
-def fetch_audio_url(video_id):
-    try:
-        # Example logic to fetch audio URL from an external source
-        # Replace with your actual logic to fetch audio URL based on video_id
-        audio_url = f'https://www.example.com/audio/{video_id}.mp3'
-        return audio_url
-    except Exception as e:
-        st.error(f"Error fetching audio: {str(e)}")
-        return None
-
-# Function to extract video ID from URL
-def extract_video_id(url):
-    parsed_url = urlparse(url)
-    if parsed_url.hostname in ['www.youtube.com', 'youtube.com']:
-        if parsed_url.path == '/watch':
-            query_params = parse_qs(parsed_url.query)
-            return query_params.get('v', [None])[0]
-        if parsed_url.path.startswith('/embed/'):
-            return parsed_url.path.split('/')[2]
-        if parsed_url.path.startswith('/v/'):
-            return parsed_url.path.split('/')[2]
-    elif parsed_url.hostname in ['youtu.be']:
-        return parsed_url.path[1:]
-    return None
-
-# Function to generate transcript
-def generate_transcript(video_id):
-    try:
-        transcript = YouTubeTranscriptApi.get_transcript(video_id)
-        script = ""
-        for text in transcript:
-            t = text["text"]
-            if t != '[Music]':
-                script += t + " "
-        return script, len(script.split())
-    except TranscriptsDisabled:
-        st.error("Transcripts are disabled for this video.")
-        return None, 0
-    except NoTranscriptFound:
-        st.error("No transcript found for this video.")
-        return None, 0
-    except Exception as e:
-        st.error(f"An error occurred: {str(e)}")
-        return None, 0
-
-# Function to convert text to speech using gTTS
-def text_to_speech(text_content):
-    try:
-        start_time = time.time()  # Measure start time
-        tts = gTTS(text=text_content, lang='en', slow=False)  # Set slow to False for faster speech
-        fp = io.BytesIO()
-        tts.write_to_fp(fp)
-        end_time = time.time()  # Measure end time
-        # st.write(f"Time taken for audio generation: {end_time - start_time:.2f} seconds")
-        return fp
-    except Exception as e:
-        st.error(f"Error generating speech: {str(e)}")
-        return None
-
 # Set Streamlit Page Configuration
 st.set_page_config(
-    page_title="Youtube Summariser",
+    page_title="YouTube Transcriber",
     page_icon='favicon.ico',
     layout="wide",
     initial_sidebar_state="expanded",
@@ -224,16 +209,13 @@ if video_id:
                     # Generate summary using Spacy
                     summ = spacy_summarize(transcript, int(length[:2]))
 
-                    # Display Transcript
+                    # Display Summary
                     st.markdown(dedent(f"""
                     <div class="summary-container">
                         <h3>\U0001F4D6 Summary</h3>
                         <p>{summ}</p>
                     </div>
                     """), unsafe_allow_html=True)
-
-                    # Generate and display text-to-speech audio
-                    st.audio(text_to_speech(summ), format='audio/mp3', start_time=0)
 
         elif sumtype == 'Abstractive (Subtitles)':
             if st.sidebar.button('Summarize'):
@@ -250,9 +232,6 @@ if video_id:
                         <p>{transcript}</p>
                     </div>
                     """), unsafe_allow_html=True)
-
-                    # Generate and display text-to-speech audio
-                    st.audio(text_to_speech(transcript), format='audio/mp3', start_time=0)
 
     except Exception as e:
         st.error(f"Error: {str(e)}")
